@@ -29,10 +29,12 @@ WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
 #include <PiDxe.h>
 
 #include <Protocol/TcgService.h>
-#include <Protocol/FirmwareVolume2.h>
 #include <Protocol/BlockIo.h>
 #include <Protocol/DiskIo.h>
 #include <Protocol/DevicePathToText.h>
+#include <Protocol/FirmwareVolumeBlock.h>
+
+#include <Guid/MeasuredFvHob.h>
 
 #include <Library/BaseLib.h>
 #include <Library/DebugLib.h>
@@ -43,6 +45,7 @@ WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
 #include <Library/BaseCryptLib.h>
 #include <Library/PeCoffLib.h>
 #include <Library/SecurityManagementLib.h>
+#include <Library/HobLib.h>
 
 //
 // Flag to check GPT partition. It only need be measured once.
@@ -52,6 +55,11 @@ EFI_GUID                          mZeroGuid = {0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}
 UINTN                             mMeasureGptCount = 0;
 VOID                              *mFileBuffer;
 UINTN                             mImageSize;
+//
+// Measured FV handle cache
+//
+EFI_HANDLE                        mCacheMeasuredHandle  = NULL;
+MEASURED_HOB_DATA                 *mMeasuredHobData     = NULL;
 
 /**
   Reads contents of a PE/COFF image in memory buffer.
@@ -198,15 +206,15 @@ TcgMeasureGptTable (
     if (!CompareGuid (&PartitionEntry->PartitionTypeGUID, &mZeroGuid)) {
       NumberOfPartition++;  
     }
-    PartitionEntry++;
+    PartitionEntry = (EFI_PARTITION_ENTRY *)((UINT8 *)PartitionEntry + PrimaryHeader->SizeOfPartitionEntry);
   }
 
   //
-  // Parepare Data for Measurement
+  // Prepare Data for Measurement
   // 
   EventSize = (UINT32)(sizeof (EFI_GPT_DATA) - sizeof (GptData->Partitions) 
                         + NumberOfPartition * PrimaryHeader->SizeOfPartitionEntry);
-  TcgEvent = (TCG_PCR_EVENT *) AllocateZeroPool (EventSize + sizeof (TCG_PCR_EVENT));
+  TcgEvent = (TCG_PCR_EVENT *) AllocateZeroPool (EventSize + sizeof (TCG_PCR_EVENT_HDR));
   if (TcgEvent == NULL) {
     FreePool (PrimaryHeader);
     FreePool (EntryPtr);
@@ -231,13 +239,13 @@ TcgMeasureGptTable (
   for (Index = 0; Index < PrimaryHeader->NumberOfPartitionEntries; Index++) {
     if (!CompareGuid (&PartitionEntry->PartitionTypeGUID, &mZeroGuid)) {
       CopyMem (
-        (UINT8 *)&GptData->Partitions + NumberOfPartition * sizeof (EFI_PARTITION_ENTRY),
+        (UINT8 *)&GptData->Partitions + NumberOfPartition * PrimaryHeader->SizeOfPartitionEntry,
         (UINT8 *)PartitionEntry,
-        sizeof (EFI_PARTITION_ENTRY)
+        PrimaryHeader->SizeOfPartitionEntry
         );
       NumberOfPartition++;
     }
-    PartitionEntry++;
+    PartitionEntry =(EFI_PARTITION_ENTRY *)((UINT8 *)PartitionEntry + PrimaryHeader->SizeOfPartitionEntry);
   }
 
   //
@@ -407,7 +415,20 @@ TcgMeasurePeImage (
   // Measuring PE/COFF Image Header;
   // But CheckSum field and SECURITY data directory (certificate) are excluded
   //
-  Magic = Hdr.Pe32->OptionalHeader.Magic;
+  if (Hdr.Pe32->FileHeader.Machine == IMAGE_FILE_MACHINE_IA64 && Hdr.Pe32->OptionalHeader.Magic == EFI_IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
+    //
+    // NOTE: Some versions of Linux ELILO for Itanium have an incorrect magic value 
+    //       in the PE/COFF Header. If the MachineType is Itanium(IA64) and the 
+    //       Magic value in the OptionalHeader is EFI_IMAGE_NT_OPTIONAL_HDR32_MAGIC
+    //       then override the magic value to EFI_IMAGE_NT_OPTIONAL_HDR64_MAGIC
+    //
+    Magic = EFI_IMAGE_NT_OPTIONAL_HDR64_MAGIC;
+  } else {
+    //
+    // Get the magic value from the PE/COFF Optional Header
+    //
+    Magic = Hdr.Pe32->OptionalHeader.Magic;
+  }
   
   //
   // 3.  Calculate the distance from the base of the image header to the image checksum address.
@@ -705,17 +726,21 @@ DxeTpmMeasureBootHandler (
   IN  BOOLEAN                          BootPolicy
   )
 {
-  EFI_TCG_PROTOCOL                  *TcgProtocol;
-  EFI_STATUS                        Status;
-  TCG_EFI_BOOT_SERVICE_CAPABILITY   ProtocolCapability;
-  UINT32                            TCGFeatureFlags;
-  EFI_PHYSICAL_ADDRESS              EventLogLocation;
-  EFI_PHYSICAL_ADDRESS              EventLogLastEntry;
-  EFI_DEVICE_PATH_PROTOCOL          *DevicePathNode;
-  EFI_DEVICE_PATH_PROTOCOL          *OrigDevicePathNode;
-  EFI_HANDLE                        Handle;
-  BOOLEAN                           ApplicationRequired;
-  PE_COFF_LOADER_IMAGE_CONTEXT      ImageContext;
+  EFI_TCG_PROTOCOL                    *TcgProtocol;
+  EFI_STATUS                          Status;
+  TCG_EFI_BOOT_SERVICE_CAPABILITY     ProtocolCapability;
+  UINT32                              TCGFeatureFlags;
+  EFI_PHYSICAL_ADDRESS                EventLogLocation;
+  EFI_PHYSICAL_ADDRESS                EventLogLastEntry;
+  EFI_DEVICE_PATH_PROTOCOL            *DevicePathNode;
+  EFI_DEVICE_PATH_PROTOCOL            *OrigDevicePathNode;
+  EFI_HANDLE                          Handle;
+  EFI_HANDLE                          TempHandle;
+  BOOLEAN                             ApplicationRequired;
+  PE_COFF_LOADER_IMAGE_CONTEXT        ImageContext;
+  EFI_FIRMWARE_VOLUME_BLOCK_PROTOCOL  *FvbProtocol;
+  EFI_PHYSICAL_ADDRESS                FvAddress;
+  UINT32                              Index;
 
   Status = gBS->LocateProtocol (&gEfiTcgProtocolGuid, NULL, (VOID **) &TcgProtocol);
   if (EFI_ERROR (Status)) {
@@ -809,10 +834,10 @@ DxeTpmMeasureBootHandler (
   ApplicationRequired = FALSE;
 
   //
-  // Check whether this device path support FV2 protocol.
+  // Check whether this device path support FVB protocol.
   //
   DevicePathNode = OrigDevicePathNode;
-  Status = gBS->LocateDevicePath (&gEfiFirmwareVolume2ProtocolGuid, &DevicePathNode, &Handle);
+  Status = gBS->LocateDevicePath (&gEfiFirmwareVolumeBlockProtocolGuid, &DevicePathNode, &Handle);
   if (!EFI_ERROR (Status)) {
     //
     // Don't check FV image, and directly return EFI_SUCCESS.
@@ -822,13 +847,50 @@ DxeTpmMeasureBootHandler (
       return EFI_SUCCESS;
     }
     //
-    // The image from Firmware image will not be mearsured.
-    // Current policy doesn't measure PeImage from Firmware if it is driver
-    // If the got PeImage is application, it will be still be measured.
+    // The PE image from unmeasured Firmware volume need be measured
+    // The PE image from measured Firmware volume will be mearsured according to policy below.
+    //   If it is driver, do not measure
+    //   If it is application, still measure.
     //
     ApplicationRequired = TRUE;
+
+    if (mCacheMeasuredHandle != Handle && mMeasuredHobData != NULL) {
+      //
+      // Search for Root FV of this PE image
+      //
+      TempHandle = Handle;
+      do {
+        Status = gBS->HandleProtocol(
+                        TempHandle, 
+                        &gEfiFirmwareVolumeBlockProtocolGuid,
+                        (VOID**)&FvbProtocol
+                        );
+        TempHandle = FvbProtocol->ParentHandle;
+      } while (!EFI_ERROR(Status) && FvbProtocol->ParentHandle != NULL);
+
+      //
+      // Search in measured FV Hob
+      //
+      Status = FvbProtocol->GetPhysicalAddress(FvbProtocol, &FvAddress);
+      if (EFI_ERROR(Status)){
+        return Status;
+      }
+
+      ApplicationRequired = FALSE;
+
+      for (Index = 0; Index < mMeasuredHobData->Num; Index++) {
+        if(mMeasuredHobData->MeasuredFvBuf[Index].BlobBase == FvAddress) {
+          //
+          // Cache measured FV for next measurement
+          //
+          mCacheMeasuredHandle = Handle;
+          ApplicationRequired  = TRUE;
+          break;
+        }
+      }
+    }
   }
-  
+
   //
   // File is not found.
   //
@@ -928,6 +990,16 @@ DxeTpmMeasureBootLibConstructor (
   IN EFI_SYSTEM_TABLE  *SystemTable
   )
 {
+  EFI_HOB_GUID_TYPE  *GuidHob;
+
+  GuidHob = NULL;
+
+  GuidHob = GetFirstGuidHob (&gMeasuredFvHobGuid);
+
+  if (GuidHob != NULL) {
+    mMeasuredHobData = GET_GUID_HOB_DATA (GuidHob);
+  }
+
   return RegisterSecurity2Handler (
           DxeTpmMeasureBootHandler,
           EFI_AUTH_OPERATION_MEASURE_IMAGE | EFI_AUTH_OPERATION_IMAGE_REQUIRED

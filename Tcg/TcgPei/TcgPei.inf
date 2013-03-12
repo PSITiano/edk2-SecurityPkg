@@ -46,20 +46,25 @@
   TimerLib
   IoLib
   PeiServicesTablePointerLib
+  BaseLib
+  PcdLib
 
 [Guids]
   gTcgEventEntryHobGuid
+  gMeasuredFvHobGuid
 
 [Ppis]
   gPeiLockPhysicalPresencePpiGuid
   gEfiPeiFirmwareVolumeInfoPpiGuid
   gPeiTpmInitializedPpiGuid
+  gEfiEndOfPeiSignalPpiGuid
 
 [Pcd]
   gEfiSecurityPkgTokenSpaceGuid.PcdHideTpm
   gEfiSecurityPkgTokenSpaceGuid.PcdPhysicalPresenceLifetimeLock
   gEfiSecurityPkgTokenSpaceGuid.PcdPhysicalPresenceCmdEnable
   gEfiSecurityPkgTokenSpaceGuid.PcdPhysicalPresenceHwEnable
+  gEfiMdeModulePkgTokenSpaceGuid.PcdFirmwareVersionString             ## CONSUMES
 
 [FixedPcd]
   gEfiSecurityPkgTokenSpaceGuid.PcdHideTpmSupport

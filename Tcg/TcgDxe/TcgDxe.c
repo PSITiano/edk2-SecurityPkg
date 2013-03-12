@@ -1,6 +1,13 @@
 /** @file  
   This module implements TCG EFI Protocol.
-  
+ 
+Caution: This module requires additional review when modified.
+This driver will have external input - TcgDxePassThroughToTpm
+This external input must be validated carefully to avoid security issue like
+buffer overflow, integer overflow.
+
+TcgDxePassThroughToTpm() will receive untrusted input and do basic validation.
+
 Copyright (c) 2005 - 2012, Intel Corporation. All rights reserved.<BR>
 This program and the accompanying materials 
 are licensed and made available under the terms and conditions of the BSD License 
@@ -345,6 +352,10 @@ TcgDxeLogEvent (
 {
   TCG_DXE_DATA  *TcgData;
 
+  if (TCGLogData == NULL){
+    return EFI_INVALID_PARAMETER;
+  }
+
   TcgData = TCG_DXE_DATA_FROM_THIS (This);
   
   if (TcgData->BsCap.TPMDeactivatedFlag) {
@@ -383,6 +394,13 @@ TcgDxePassThroughToTpm (
   )
 {
   TCG_DXE_DATA                      *TcgData;
+
+  if (TpmInputParameterBlock == NULL || 
+      TpmOutputParameterBlock == NULL || 
+      TpmInputParameterBlockSize == 0 ||
+      TpmOutputParameterBlockSize == 0) {
+    return EFI_INVALID_PARAMETER;
+  }
 
   TcgData = TCG_DXE_DATA_FROM_THIS (This);
 
@@ -424,7 +442,11 @@ TcgDxeHashLogExtendEventI (
 {
   EFI_STATUS                        Status;
 
-  if (HashDataLen > 0) {
+  if (HashData == NULL && HashDataLen > 0) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  if (HashDataLen > 0 || HashData != NULL) {
     Status = TpmCommHashAll (
                HashData,
                (UINTN) HashDataLen,
@@ -483,6 +505,11 @@ TcgDxeHashLogExtendEvent (
   )
 {
   TCG_DXE_DATA  *TcgData;
+  EFI_STATUS    Status;
+
+  if (TCGLogData == NULL || EventLogLastEntry == NULL){
+    return EFI_INVALID_PARAMETER;
+  }
 
   TcgData = TCG_DXE_DATA_FROM_THIS (This);
   
@@ -494,13 +521,19 @@ TcgDxeHashLogExtendEvent (
     return EFI_UNSUPPORTED;
   }
 
-  return TcgDxeHashLogExtendEventI (
-           TcgData,
-           (UINT8 *) (UINTN) HashData,
-           HashDataLen,
-           (TCG_PCR_EVENT_HDR*)TCGLogData,
-           TCGLogData->Event
-           );
+  Status = TcgDxeHashLogExtendEventI (
+             TcgData,
+             (UINT8 *) (UINTN) HashData,
+             HashDataLen,
+             (TCG_PCR_EVENT_HDR*)TCGLogData,
+             TCGLogData->Event
+             );
+
+  if (!EFI_ERROR(Status)){
+    *EventLogLastEntry = (EFI_PHYSICAL_ADDRESS)(UINTN) TcgData->LastEvent;
+  }
+
+  return Status;
 }
 
 TCG_DXE_DATA                 mTcgDxeData = {

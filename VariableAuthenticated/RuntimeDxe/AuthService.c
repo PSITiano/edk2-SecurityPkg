@@ -34,6 +34,7 @@ WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
 ///
 UINT8    mPubKeyStore[MAX_KEYDB_SIZE];
 UINT32   mPubKeyNumber;
+UINT8    mCertDbStore[MAX_CERTDB_SIZE];
 UINT32   mPlatformMode;
 EFI_GUID mSignatureSupport[] = {EFI_CERT_SHA1_GUID, EFI_CERT_SHA256_GUID, EFI_CERT_RSA2048_GUID, EFI_CERT_X509_GUID};
 //
@@ -254,68 +255,46 @@ AutenticatedVariableServiceInitialize (
   }
   
   //
-  // Check "SetupMode" variable's existence.
-  // If it doesn't exist, check PK database's existence to determine the value.
-  // Then create a new one with EFI_VARIABLE_AUTHENTICATED_WRITE_ACCESS set.
+  // Create "SetupMode" varable with BS+RT attribute set.
   //
-  Status = FindVariable (
+  FindVariable (EFI_SETUP_MODE_NAME, &gEfiGlobalVariableGuid, &Variable, &mVariableModuleGlobal->VariableGlobal, FALSE);
+  if (PkVariable.CurrPtr == NULL) {
+    mPlatformMode = SETUP_MODE;
+  } else {
+    mPlatformMode = USER_MODE;
+  }
+  Status = UpdateVariable (
              EFI_SETUP_MODE_NAME,
              &gEfiGlobalVariableGuid,
+             &mPlatformMode,
+             sizeof(UINT8),
+             EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS,
+             0,
+             0,
              &Variable,
-             &mVariableModuleGlobal->VariableGlobal,
-             FALSE
+             NULL
              );
-
-  if (Variable.CurrPtr == NULL) {
-    if (PkVariable.CurrPtr == NULL) {
-      mPlatformMode = SETUP_MODE;
-    } else {
-      mPlatformMode = USER_MODE;
-    }
-
-    VarAttr = EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_RUNTIME_ACCESS | EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_AUTHENTICATED_WRITE_ACCESS;
-    Status  = UpdateVariable (
-                EFI_SETUP_MODE_NAME,
-                &gEfiGlobalVariableGuid,
-                &mPlatformMode,
-                sizeof(UINT8),
-                VarAttr,
-                0,
-                0,
-                &Variable,
-                NULL
-                );
-    if (EFI_ERROR (Status)) {
-      return Status;
-    }
-  } else {
-    mPlatformMode = *(GetVariableDataPtr (Variable.CurrPtr));
+  if (EFI_ERROR (Status)) {
+    return Status;
   }
+  
   //
-  // Check "SignatureSupport" variable's existence.
-  // If it doesn't exist, then create a new one with EFI_VARIABLE_AUTHENTICATED_WRITE_ACCESS set.
+  // Create "SignatureSupport" varable with BS+RT attribute set.
   //
-  Status = FindVariable (
-             EFI_SIGNATURE_SUPPORT_NAME,
-             &gEfiGlobalVariableGuid,
-             &Variable,
-             &mVariableModuleGlobal->VariableGlobal,
-             FALSE
-             );
-
-  if (Variable.CurrPtr == NULL) {
-    VarAttr = EFI_VARIABLE_RUNTIME_ACCESS | EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_AUTHENTICATED_WRITE_ACCESS;
-    Status  = UpdateVariable (
-                EFI_SIGNATURE_SUPPORT_NAME,
-                &gEfiGlobalVariableGuid,
-                mSignatureSupport,
-                sizeof(mSignatureSupport),
-                VarAttr,
-                0,
-                0,
-                &Variable,
-                NULL
-                );
+  FindVariable (EFI_SIGNATURE_SUPPORT_NAME, &gEfiGlobalVariableGuid, &Variable, &mVariableModuleGlobal->VariableGlobal, FALSE);
+  Status  = UpdateVariable (
+              EFI_SIGNATURE_SUPPORT_NAME,
+              &gEfiGlobalVariableGuid,
+              mSignatureSupport,
+              sizeof(mSignatureSupport),
+              EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS,
+              0,
+              0,
+              &Variable,
+              NULL
+              );
+  if (EFI_ERROR (Status)) {
+    return Status;
   }
 
   //
@@ -323,7 +302,7 @@ AutenticatedVariableServiceInitialize (
   // If "SecureBootEnable" variable is SECURE_BOOT_ENABLE and in USER_MODE, Set "SecureBoot" variable to SECURE_BOOT_MODE_ENABLE.
   // If "SecureBootEnable" variable is SECURE_BOOT_DISABLE, Set "SecureBoot" variable to SECURE_BOOT_MODE_DISABLE.
   //
-  SecureBootEnable = SECURE_BOOT_MODE_DISABLE;
+  SecureBootEnable = SECURE_BOOT_DISABLE;
   FindVariable (EFI_SECURE_BOOT_ENABLE_NAME, &gEfiSecureBootEnableDisableGuid, &Variable, &mVariableModuleGlobal->VariableGlobal, FALSE);
   if (Variable.CurrPtr != NULL) {
     SecureBootEnable = *(GetVariableDataPtr (Variable.CurrPtr));
@@ -331,7 +310,7 @@ AutenticatedVariableServiceInitialize (
     //
     // "SecureBootEnable" not exist, initialize it in USER_MODE.
     //
-    SecureBootEnable = SECURE_BOOT_MODE_ENABLE;
+    SecureBootEnable = SECURE_BOOT_ENABLE;
     Status = UpdateVariable (
                EFI_SECURE_BOOT_ENABLE_NAME,
                &gEfiSecureBootEnableDisableGuid,
@@ -348,6 +327,9 @@ AutenticatedVariableServiceInitialize (
     }
   }
 
+  //
+  // Create "SecureBoot" varable with BS+RT attribute set.
+  //
   if (SecureBootEnable == SECURE_BOOT_ENABLE && mPlatformMode == USER_MODE) {
     SecureBootMode = SECURE_BOOT_MODE_ENABLE;
   } else {
@@ -359,7 +341,7 @@ AutenticatedVariableServiceInitialize (
              &gEfiGlobalVariableGuid,
              &SecureBootMode,
              sizeof (UINT8),
-             EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_RUNTIME_ACCESS | EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_AUTHENTICATED_WRITE_ACCESS,
+             EFI_VARIABLE_RUNTIME_ACCESS | EFI_VARIABLE_BOOTSERVICE_ACCESS,
              0,
              0,
              &Variable,
@@ -417,7 +399,7 @@ AutenticatedVariableServiceInitialize (
 
   if (Variable.CurrPtr == NULL) {
     VarAttr  = EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_RUNTIME_ACCESS | EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_TIME_BASED_AUTHENTICATED_WRITE_ACCESS;
-    ListSize = 0;
+    ListSize = sizeof (UINT32);
     Status   = UpdateVariable (
                  EFI_CERT_DB_NAME,
                  &gEfiCertDbGuid,
@@ -429,7 +411,9 @@ AutenticatedVariableServiceInitialize (
                  &Variable,
                  NULL
                  );
-
+    if (EFI_ERROR (Status)) {
+      return Status;
+    }
   }  
 
   return Status;
@@ -660,22 +644,12 @@ UpdatePlatformMode (
     return Status;
   }
 
-  mPlatformMode  = Mode;
-  VarAttr        = EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_RUNTIME_ACCESS | EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_AUTHENTICATED_WRITE_ACCESS;
-  Status         = UpdateVariable (
-                     EFI_SETUP_MODE_NAME,
-                     &gEfiGlobalVariableGuid,
-                     &mPlatformMode,
-                     sizeof(UINT8),
-                     VarAttr,
-                     0,
-                     0,
-                     &Variable,
-                     NULL
-                     );
-  if (EFI_ERROR (Status)) {
-    return Status;
-  }
+  //
+  // Update the value of SetupMode variable by a simple mem copy, this could avoid possible
+  // variable storage reclaim at runtime.
+  //
+  mPlatformMode = (UINT8) Mode;
+  CopyMem (GetVariableDataPtr (Variable.CurrPtr), &mPlatformMode, sizeof(UINT8));
 
   if (AtRuntime ()) {
     //
@@ -775,7 +749,7 @@ UpdatePlatformMode (
 }
 
 /**
-  Check input data form to make sure it is a valid EFI_SIGNATURE_LIST for PK/KEK variable.
+  Check input data form to make sure it is a valid EFI_SIGNATURE_LIST for PK/KEK/db/dbx variable.
 
   @param[in]  VariableName                Name of Variable to be check.
   @param[in]  VendorGuid                  Variable vendor GUID.
@@ -799,6 +773,9 @@ CheckSignatureListFormat(
   UINT32                 Index;
   UINT32                 SigCount;
   BOOLEAN                IsPk;
+  VOID                   *RsaContext;
+  EFI_SIGNATURE_DATA     *CertData;
+  UINTN                  CertLen;
 
   if (DataSize == 0) {
     return EFI_SUCCESS;
@@ -808,7 +785,9 @@ CheckSignatureListFormat(
 
   if (CompareGuid (VendorGuid, &gEfiGlobalVariableGuid) && (StrCmp (VariableName, EFI_PLATFORM_KEY_NAME) == 0)){
     IsPk = TRUE;
-  } else if (CompareGuid (VendorGuid, &gEfiGlobalVariableGuid) && (StrCmp (VariableName, EFI_KEY_EXCHANGE_KEY_NAME) == 0)) {
+  } else if ((CompareGuid (VendorGuid, &gEfiGlobalVariableGuid) && StrCmp (VariableName, EFI_KEY_EXCHANGE_KEY_NAME) == 0) ||
+             (CompareGuid (VendorGuid, &gEfiImageSecurityDatabaseGuid) && 
+              (StrCmp (VariableName, EFI_IMAGE_SECURITY_DATABASE) == 0 || StrCmp (VariableName, EFI_IMAGE_SECURITY_DATABASE1) == 0))){
     IsPk = FALSE;
   } else {
     return EFI_SUCCESS;
@@ -817,6 +796,7 @@ CheckSignatureListFormat(
   SigCount = 0;
   SigList  = (EFI_SIGNATURE_LIST *) Data;
   SigDataSize  = DataSize;
+  RsaContext = NULL;
 
   //
   // Walk throuth the input signature list and check the data format.
@@ -846,6 +826,24 @@ CheckSignatureListFormat(
       // Undefined signature type.
       //
       return EFI_INVALID_PARAMETER;
+    }
+
+    if (CompareGuid (&SigList->SignatureType, &gEfiCertX509Guid)) {
+      //
+      // Try to retrieve the RSA public key from the X.509 certificate.
+      // If this operation fails, it's not a valid certificate.
+      //
+      RsaContext = RsaNew ();
+      if (RsaContext == NULL) {
+        return EFI_INVALID_PARAMETER;
+      }
+      CertData = (EFI_SIGNATURE_DATA *) ((UINT8 *) SigList + sizeof (EFI_SIGNATURE_LIST) + SigList->SignatureHeaderSize);
+      CertLen = SigList->SignatureSize - sizeof (EFI_GUID);
+      if (!RsaGetPublicKeyFromX509 (CertData->SignatureData, CertLen, &RsaContext)) {
+        RsaFree (RsaContext);
+        return EFI_INVALID_PARAMETER;
+      }
+      RsaFree (RsaContext);
     }
 
     if ((SigList->SignatureListSize - sizeof (EFI_SIGNATURE_LIST) - SigList->SignatureHeaderSize) % SigList->SignatureSize != 0) {
@@ -912,42 +910,19 @@ ProcessVarWithPk (
   if ((Attributes & EFI_VARIABLE_NON_VOLATILE) == 0 || 
       (Attributes & EFI_VARIABLE_TIME_BASED_AUTHENTICATED_WRITE_ACCESS) == 0) {
     //
-    // PK and KEK should set EFI_VARIABLE_NON_VOLATILE attribute and should be a time-based
+    // PK, KEK and db/dbx should set EFI_VARIABLE_NON_VOLATILE attribute and should be a time-based
     // authenticated variable.
     //
     return EFI_INVALID_PARAMETER;
   }
 
-  if (mPlatformMode == USER_MODE && !(InCustomMode() && UserPhysicalPresent())) {
-    //
-    // Verify against X509 Cert PK.
-    //
-    Del    = FALSE;
-    Status = VerifyTimeBasedPayload (
-               VariableName,
-               VendorGuid,
-               Data,
-               DataSize,
-               Variable,
-               Attributes,
-               AuthVarTypePk,
-               &Del
-               );
-    if (!EFI_ERROR (Status)) {
-      //
-      // If delete PK in user mode, need change to setup mode.
-      //
-      if (Del && IsPk) {
-        Status = UpdatePlatformMode (SETUP_MODE);
-      }
-    }
-    return Status;
-  } else {
-    //
-    // Process PK or KEK in Setup mode or Custom Secure Boot mode.
-    //
+  Del = FALSE;
+  if ((InCustomMode() && UserPhysicalPresent()) || (mPlatformMode == SETUP_MODE && !IsPk)) {
     Payload = (UINT8 *) Data + AUTHINFO2_SIZE (Data);
     PayloadSize = DataSize - AUTHINFO2_SIZE (Data);
+    if (PayloadSize == 0) {
+      Del = TRUE;
+    }
 
     Status = CheckSignatureListFormat(VariableName, VendorGuid, Payload, PayloadSize);
     if (EFI_ERROR (Status)) {
@@ -965,20 +940,48 @@ ProcessVarWithPk (
                Variable,
                &((EFI_VARIABLE_AUTHENTICATION_2 *) Data)->TimeStamp
                );
+  } else if (mPlatformMode == USER_MODE) {
+    //
+    // Verify against X509 Cert in PK database.
+    //
+    Status = VerifyTimeBasedPayload (
+               VariableName,
+               VendorGuid,
+               Data,
+               DataSize,
+               Variable,
+               Attributes,
+               AuthVarTypePk,
+               &Del
+               );
+  } else {
+    //
+    // Verify against the certificate in data payload.
+    //
+    Status = VerifyTimeBasedPayload (
+               VariableName,
+               VendorGuid,
+               Data,
+               DataSize,
+               Variable,
+               Attributes,
+               AuthVarTypePayload,
+               &Del
+               );
+  }
 
-    if (IsPk) {
-      if (PayloadSize != 0) {
-        //
-        // If enroll PK in setup mode, need change to user mode.
-        //
-        Status = UpdatePlatformMode (USER_MODE);
-      } else {
-        //
-        // If delete PK in custom mode, need change to setup mode.
-        //
-        UpdatePlatformMode (SETUP_MODE);
-      }
-    }   
+  if (!EFI_ERROR(Status) && IsPk) {
+    if (mPlatformMode == SETUP_MODE && !Del) {
+      //
+      // If enroll PK in setup mode, need change to user mode.
+      //
+      Status = UpdatePlatformMode (USER_MODE);
+    } else if (mPlatformMode == USER_MODE && Del){
+      //
+      // If delete PK in user mode, need change to setup mode.
+      //
+      Status = UpdatePlatformMode (SETUP_MODE);
+    }
   }
 
   return Status;
@@ -1053,6 +1056,11 @@ ProcessVarWithKek (
     Payload = (UINT8 *) Data + AUTHINFO2_SIZE (Data);
     PayloadSize = DataSize - AUTHINFO2_SIZE (Data);
 
+    Status = CheckSignatureListFormat(VariableName, VendorGuid, Payload, PayloadSize);
+    if (EFI_ERROR (Status)) {
+      return Status;
+    }
+    
     Status = UpdateVariable (
                VariableName,
                VendorGuid,
@@ -1129,6 +1137,22 @@ ProcessVariable (
     return EFI_SECURITY_VIOLATION;
   }
   
+  //
+  // A time-based authenticated variable and a count-based authenticated variable
+  // can't be updated by each other.
+  // 
+  if (Variable->CurrPtr != NULL) {    
+    if (((Attributes & EFI_VARIABLE_AUTHENTICATED_WRITE_ACCESS) != 0) &&
+        ((Variable->CurrPtr->Attributes & EFI_VARIABLE_TIME_BASED_AUTHENTICATED_WRITE_ACCESS) != 0)) {
+      return EFI_SECURITY_VIOLATION;      
+    }
+    
+    if (((Attributes & EFI_VARIABLE_TIME_BASED_AUTHENTICATED_WRITE_ACCESS) != 0) && 
+        ((Variable->CurrPtr->Attributes & EFI_VARIABLE_AUTHENTICATED_WRITE_ACCESS) != 0)) {
+      return EFI_SECURITY_VIOLATION;      
+    }
+  }
+    
   //
   // Process Time-based Authenticated variable.
   //
@@ -1659,10 +1683,7 @@ DeleteCertsFromDb (
   // Construct new data content of variable "certdb".
   //
   NewCertDbSize = (UINT32) DataSize - CertNodeSize;
-  NewCertDb     = AllocateZeroPool (NewCertDbSize);
-  if (NewCertDb == NULL) {
-    return EFI_OUT_OF_RESOURCES;
-  }
+  NewCertDb     = (UINT8*) mCertDbStore;
 
   //
   // Copy the DB entries before deleting node.
@@ -1699,7 +1720,6 @@ DeleteCertsFromDb (
                NULL
                );
 
-  FreePool (NewCertDb);
   return Status;
 }
 
@@ -1788,11 +1808,11 @@ InsertCertsToDb (
   //
   NameSize      = (UINT32) StrLen (VariableName);
   CertNodeSize  = sizeof (AUTH_CERT_DB_DATA) + (UINT32) CertDataSize + NameSize * sizeof (CHAR16); 
-  NewCertDbSize = (UINT32) DataSize + CertNodeSize;                  
-  NewCertDb     = AllocateZeroPool (NewCertDbSize);
-  if (NewCertDb == NULL) {
+  NewCertDbSize = (UINT32) DataSize + CertNodeSize;
+  if (NewCertDbSize > MAX_CERTDB_SIZE) {
     return EFI_OUT_OF_RESOURCES;
   }
+  NewCertDb     = (UINT8*) mCertDbStore;
 
   //
   // Copy the DB entries before deleting node.
@@ -1839,7 +1859,6 @@ InsertCertsToDb (
                NULL
                );
 
-  FreePool (NewCertDb);
   return Status;
 }
 
@@ -1859,7 +1878,7 @@ InsertCertsToDb (
                                           data, this value contains the required size.
   @param[in]  Variable                    The variable information which is used to keep track of variable usage.
   @param[in]  Attributes                  Attribute value of the variable.
-  @param[in]  AuthVarType                 Verify against PK or KEK database or private database.
+  @param[in]  AuthVarType                 Verify against PK, KEK database, private database or certificate in data payload.
   @param[out] VarDel                      Delete the variable or not.
 
   @retval EFI_INVALID_PARAMETER           Invalid parameter.
@@ -2152,6 +2171,22 @@ VerifyTimeBasedPayload (
         goto Exit;
       }
     }
+  } else if (AuthVarType == AuthVarTypePayload) {
+    CertList = (EFI_SIGNATURE_LIST *) PayloadPtr;
+    Cert     = (EFI_SIGNATURE_DATA *) ((UINT8 *) CertList + sizeof (EFI_SIGNATURE_LIST) + CertList->SignatureHeaderSize);
+    RootCert      = Cert->SignatureData;
+    RootCertSize  = CertList->SignatureSize - (sizeof (EFI_SIGNATURE_DATA) - 1);
+    
+    // Verify Pkcs7 SignedData via Pkcs7Verify library.
+    //
+    VerifyStatus = Pkcs7Verify (
+                     SigData,
+                     SigDataSize,
+                     RootCert,
+                     RootCertSize,
+                     NewData,
+                     NewDataSize
+                     );
   } else {
     return EFI_SECURITY_VIOLATION;
   }
